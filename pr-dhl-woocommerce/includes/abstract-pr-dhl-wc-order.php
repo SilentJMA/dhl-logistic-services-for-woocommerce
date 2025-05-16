@@ -207,17 +207,33 @@ if ( ! class_exists( 'PR_DHL_WC_Order' ) ) :
 					);
 				echo '</div>';
 
-				$this->additional_meta_box_fields( $order_id, $is_disabled, $dhl_label_items, $dhl_obj );
-
-				// A label has been generated already, allow to delete
-				if ( empty( $label_tracking_info ) ) {
-					echo $main_button;
-				} else {
-					echo $print_button;
-					echo $delete_label;
-				}
-
-				wp_enqueue_script( 'wc-shipment-dhl-label-js', PR_DHL_PLUGIN_DIR_URL . '/assets/js/pr-dhl.js', array( 'jquery' ), PR_DHL_VERSION );
+					// Display the meta box fields
+					$this->additional_meta_box_fields( $order_id, $is_disabled, $dhl_label_items, $dhl_obj );
+					
+					// Label actions section with improved security and accessibility
+					if ( empty( $label_tracking_info ) ) {
+					    // Only show create label button if no label exists
+					    echo wp_kses_post( $main_button );
+					} else {
+					    // Show print/delete actions if label exists
+					    echo wp_kses_post( $print_button );
+					    echo wp_kses_post( $delete_label );
+					}
+					
+					// Enqueue scripts with proper versioning and dependency management
+					$script_handle = 'wc-shipment-dhl-label-js';
+					$script_path = PR_DHL_PLUGIN_DIR_URL . '/assets/js/pr-dhl.js';
+					
+					wp_enqueue_script(
+					    $script_handle,
+					    esc_url( $script_path ),
+					    array( 'jquery' ),
+					    PR_DHL_VERSION,
+					    array(
+					        'in_footer' => true, // Load in footer for better performance
+					        'strategy'  => 'defer', // Use defer for better loading performance
+					    )
+					);
 				wp_localize_script( 'wc-shipment-dhl-label-js', 'dhl_label_data', $dhl_label_data );
 
 			} else {
