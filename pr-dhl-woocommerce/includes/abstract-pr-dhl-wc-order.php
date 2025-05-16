@@ -1392,46 +1392,136 @@ if ( ! class_exists( 'PR_DHL_WC_Order' ) ) :
 			}
 		}
 
-		protected function merge_label_files_pdf( $files ) {
+protected function merge_label_files_pdf(array $files): array
+{
+    // Validate input
+    if (empty($files)) {
+        throw new Exception(
+            esc_html__('There are no files to merge.', 'dhl-for-woocommerce')
+        );
+    }
 
-			if ( empty( $files ) ) {
-				throw new Exception( esc_html__( 'There are no files to merge.', 'dhl-for-woocommerce' ) );
-			}
+    // Initialize PDF merger with proper dependency handling
+    try {
+        $loader = PR_DHL_Libraryloader::instance();
+        $pdfMerger = $loader->get_pdf_merger();
+        
+        if ($pdfMerger === null) {
+            throw new Exception(
+                esc_html__('Library conflict, could not merge PDF files. Please download PDF files individually.', 'dhl-for-woocommerce')
+            );
+        }
+    } catch (Exception $e) {
+        error_log('DHL PDF Merger initialization failed: ' . $e->getMessage());
+        throw $e;
+    }
 
-			$loader    = PR_DHL_Libraryloader::instance();
-			$pdfMerger = $loader->get_pdf_merger();
+    $validFiles = [];
+    $invalidFiles = [];
 
-			if ( $pdfMerger === null ) {
+    // Process each file with validation
+    foreach ($files as $filePath) {
+        try {
+            // Normalize path and check existence
+            $normalizedPath = wp_normalize_path($filePath);
+            
+            if (!file_exists($normalizedPath)) {
+                $invalidFiles[] = $filePath;
+                continue;
+            }
 
-				throw new Exception( esc_html__( 'Library conflict, could not merge PDF files. Please download PDF files individually.', 'dhl-for-woocommerce' ) );
-			}
+            // Validate PDF extension
+            $ext = strtolower(pathinfo($normalizedPath, PATHINFO_EXTENSION));
+            if ($ext !== 'pdf') {
+                throw new Exception(
+                    sprintf(
+                        esc_html__('Invalid file format (%s). Only PDF files can be merged.', 'dhl-for-woocommerce'),
+                        $ext
+                    )
+                );
+            }
 
-			foreach ( $files as $key => $value ) {
+            // Verify file is actually a PDF (basic check)
+            if (mime_content_type($normalizedPath) !== 'application/pdf') {
+                throw new Exception(
+                    esc_html__('One or more files are not valid PDF documents.', 'dhl-for-woocommerce')
+                );
+            }
 
-				if ( ! file_exists( $value ) ) {
-					// throw new Exception( __('File does not exist', 'dhl-for-woocommerce') );
-					continue;
-				}
+            $validFiles[] = $normalizedPath;
+            $pdfMerger->addPDF($normalizedPath, 'all');
+            
+        } catch (Exception $e) {
+            error_log('DHL PDF Processing Error: ' . $e->getMessage());
+            throw $e;
+        }
+    }
 
-				$ext = pathinfo( $value, PATHINFO_EXTENSION );
-				// if ( strncasecmp('pdf', $ext, strlen($ext) ) == 0 ) {
-				if ( stripos( $ext, 'pdf' ) === false ) {
-					throw new Exception( esc_html__( 'Not all the file formats are the same.', 'dhl-for-woocommerce' ) );
-				}
+    // Check if we have valid files to merge
+    if (empty($validFiles)) {
+        throw new Exception(
+            esc_html__('No valid PDF files found to merge.', 'dhl-for-woocommerce')
+        );
+    }
 
-				$pdfMerger->addPDF( $value, 'all' );
-			}
+    // Log skipped files for debugging
+    if (!empty($invalidFiles)) {
+        error_log(sprintf(
+            'DHL PDF Merge: Skipped %d invalid files: %s',
+            count($invalidFiles),
+            implode(', ', $invalidFiles)
+        ));
+    }
 
-			$filename       = 'dhl-label-bulk-' . time() . '.pdf';
-			$file_bulk_path = PR_DHL()->get_dhl_label_folder_dir() . $filename;
-			$file_bulk_url  = PR_DHL()->get_dhl_label_folder_url() . $filename;
-			$pdfMerger->merge( 'file', $file_bulk_path );
+    // Generate output file
+    try {
+        $filename = sanitize_file_name('dhl-label-bulk-' . time() . '.pdf');
+        $labelDir = trailingslashit(PR_DHL()->get_dhl_label_folder_dir());
+        $labelUrl = trailingslashit(PR_DHL()->get_dhl_label_folder_url());
+        
+        // Ensure directory exists
+        if (!wp_mkdir_p($labelDir)) {
+            throw new Exception(
+                esc_html__('Could not create labels directory.', 'dhl-for-woocommerce')
+            );
+        }
 
-			return array(
-				'file_bulk_path' => $file_bulk_path,
-				'file_bulk_url'  => $file_bulk_url,
-			);
-		}
+        $fileBulkPath = $labelDir . $filename;
+        $fileBulkUrl = $labelUrl . $filename;
+
+        // Perform the merge
+        $pdfMerger->merge('file', $fileBulkPath);
+
+        // Verify merge was successful
+        if (!file_exists($fileBulkPath) || filesize($fileBulkPath) === 0) {
+            throw new Exception(
+                esc_html__('Failed to generate merged PDF file.', 'dhl-for-woocommerce')
+            );
+        }
+
+        // Set secure file permissions
+        chmod($fileBulkPath, 0644);
+
+        return [
+            'file_bulk_path' => $fileBulkPath,
+            'file_bulk_url'  => esc_url_raw($fileBulkUrl),
+            'merged_count'   => count($validFiles), // Useful metadata
+            'skipped_count'  => count($invalidFiles), // Useful metadata
+            'file_size'      => filesize($fileBulkPath), // Useful metadata
+        ];
+
+    } catch (Exception $e) {
+        // Cleanup if file was partially created
+        if (isset($fileBulkPath) && file_exists($fileBulkPath)) {
+            unlink($fileBulkPath);
+        }
+        
+        error_log('DHL PDF Merge Failed: ' . $e->getMessage());
+        throw new Exception(
+            esc_html__('Failed to merge label files. Please try again.', 'dhl-for-woocommerce')
+        );
+    }
+}
 
 		/**
 		 * Creates a custom endpoint to download the label
